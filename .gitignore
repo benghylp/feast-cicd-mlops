@@ -76,3 +76,4 @@ Thumbs.db
 # IMPORTANT: Never commit sensitive information!
 # Use GitHub Secrets for credentials in .github/workflows/
 # ============================================================================
+GITHUB_SECRETS_SETUP.md

@@ -3,7 +3,7 @@ provider: local
 
 registry:
   registry_type: sql
-  path: postgresql+psycopg2://${POSTGRES_USER}:${POSTGRES_PASSWORD}@${POSTGRES_HOST}:${POSTGRES_PORT}/${POSTGRES_DB}?sslmode=require
+  path: postgresql+psycopg2://${POSTGRES_USER}:${POSTGRES_PASSWORD}@${FEAST_POSTGRES_HOST}:${FEAST_POSTGRES_PORT}/${FEAST_POSTGRES_DB}?sslmode=require
 
 offline_store:
   type: file

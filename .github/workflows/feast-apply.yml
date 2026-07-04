@@ -1,9 +1,8 @@
 # ============================================================================
-# Feast CD — Deployment de Features a Producción
+# Feast CD - Deploy Features to Production
 # ============================================================================
-# Estándar: MLOps Engineering
-# Trigger: Solo push a main (merge de PR)
-# Fases: validate → secrets → initialize → apply → verify → notify
+# Trigger: Push to main (after PR merge)
+# Jobs: validate → secrets → deploy
 # ============================================================================
 
 name: "Feast CD"
@@ -15,9 +14,6 @@ on:
       - "feast_repo/**"
 
 env:
-  # Nombres de variables EXACTOS que usa feature_store.yaml
-  # Registry: postgresql+psycopg2://${POSTGRES_USER}:${POSTGRES_PASSWORD}@${FEAST_POSTGRES_HOST}:${FEAST_POSTGRES_PORT}/${FEAST_POSTGRES_DB}
-  # Online Store Redis: ${FEAST_REDIS_HOST}:${FEAST_REDIS_PORT},password=${FEAST_REDIS_KEY}
   POSTGRES_USER: ${{ secrets.FEAST_POSTGRES_USER }}
   POSTGRES_PASSWORD: ${{ secrets.FEAST_POSTGRES_PASSWORD }}
   FEAST_POSTGRES_HOST: ${{ secrets.FEAST_POSTGRES_HOST }}
@@ -29,10 +25,9 @@ env:
   AZURE_STORAGE_ACCOUNT_NAME: ${{ secrets.AZURE_STORAGE_ACCOUNT_NAME }}
   AZURE_STORAGE_ACCOUNT_KEY: ${{ secrets.AZURE_STORAGE_ACCOUNT_KEY }}
 
-
 jobs:
   validate:
-    name: "✅ Validar features (igual a CI)"
+    name: "Validate Features"
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -42,339 +37,185 @@ jobs:
           python-version: "3.11"
           cache: "pip"
 
-      - name: Instalar dependencias
+      - name: Install dependencies
         run: pip install "feast[redis,postgres]" pytest pyyaml
 
-      - name: Validar syntax
+      - name: Validate Python syntax
         run: |
           python << 'PYTHON_SCRIPT'
-          import ast, sys, glob
+          import ast
+          import sys
+          import glob
+          
           errors = 0
-          for f in glob.glob('feast_repo/*.py'):
+          for filepath in glob.glob('feast_repo/*.py'):
               try:
-                  ast.parse(open(f).read())
+                  with open(filepath) as f:
+                      ast.parse(f.read())
               except SyntaxError as e:
+                  print(f"ERROR: {filepath}: {e}")
                   errors += 1
+          
           sys.exit(errors)
           PYTHON_SCRIPT
 
-      - name: Validar estructura
-        run: |
-          python << 'PYTHON_SCRIPT'
-          import os, sys
-          required = ['feast_repo/feature_store.yaml', 'feast_repo/entities.py',
-                      'feast_repo/sources.py', 'feast_repo/feature_views.py',
-                      'feast_repo/feature_services.py']
-          if any(not os.path.exists(f) for f in required):
-              sys.exit(1)
-          PYTHON_SCRIPT
-
-      - name: Tests
-        run: pytest tests/test_features.py -v 2>&1 || true
-
-  validate-secrets:
-    name: "🔐 Validar secretos"
-    needs: validate
-    runs-on: ubuntu-latest
-    steps:
-      - name: Verificar PostgreSQL secrets
-        run: |
-          echo "🔐 Validando secretos PostgreSQL..."
-          [ -z "${{ secrets.FEAST_POSTGRES_HOST }}" ] && echo "❌ FEAST_POSTGRES_HOST vacío" && exit 1
-          [ -z "${{ secrets.FEAST_POSTGRES_USER }}" ] && echo "❌ FEAST_POSTGRES_USER vacío" && exit 1
-          [ -z "${{ secrets.FEAST_POSTGRES_PASSWORD }}" ] && echo "❌ FEAST_POSTGRES_PASSWORD vacío" && exit 1
-          [ -z "${{ secrets.FEAST_POSTGRES_PORT }}" ] && echo "❌ FEAST_POSTGRES_PORT vacío (debe ser número: 5432)" && exit 1
-          [ -z "${{ secrets.FEAST_POSTGRES_DB }}" ] && echo "❌ FEAST_POSTGRES_DB vacío" && exit 1
-          echo "✅ PostgreSQL secrets configurados"
-
-      - name: Verificar Redis secrets
-        run: |
-          echo "🔐 Validando secretos Redis..."
-          [ -z "${{ secrets.FEAST_REDIS_HOST }}" ] && echo "❌ FEAST_REDIS_HOST vacío" && exit 1
-          [ -z "${{ secrets.FEAST_REDIS_PORT }}" ] && echo "❌ FEAST_REDIS_PORT vacío (ej: 6380)" && exit 1
-          [ -z "${{ secrets.FEAST_REDIS_KEY }}" ] && echo "❌ FEAST_REDIS_KEY vacío" && exit 1
-          echo "✅ Redis secrets configurados"
-
-      - name: Verificar Azure secrets
-        run: |
-          echo "🔐 Validando secretos Azure..."
-          [ -z "${{ secrets.AZURE_STORAGE_ACCOUNT_NAME }}" ] && echo "❌ AZURE_STORAGE_ACCOUNT_NAME vacío" && exit 1
-          [ -z "${{ secrets.AZURE_STORAGE_ACCOUNT_KEY }}" ] && echo "❌ AZURE_STORAGE_ACCOUNT_KEY vacío" && exit 1
-          echo "✅ Azure secrets configurados"
-
-  apply:
-    name: "🚀 Registrar features"
-    needs: validate-secrets
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-          cache: "pip"
-
-      - name: Instalar dependencias
-        run: pip install "feast[redis,postgres]" psycopg2-binary adlfs azure-storage-blob
-
-      - name: Sincronizar datos desde Blob
-        run: python scripts/sync_from_blob.py
-
-      - name: Inicializar registry en PostgreSQL
-        working-directory: feast_repo
+      - name: Validate file structure
         run: |
           python << 'PYTHON_SCRIPT'
           import os
           import sys
-          from sqlalchemy import create_engine, text
           
-          print("📦 Inicializando registry en PostgreSQL...")
+          required_files = [
+              'feast_repo/feature_store.yaml',
+              'feast_repo/entities.py',
+              'feast_repo/sources.py',
+              'feast_repo/feature_views.py',
+              'feast_repo/feature_services.py'
+          ]
           
-          # Construir connection string
-          user = os.getenv('POSTGRES_USER')
-          password = os.getenv('POSTGRES_PASSWORD')
-          host = os.getenv('FEAST_POSTGRES_HOST')
-          port = os.getenv('FEAST_POSTGRES_PORT')
-          db = os.getenv('FEAST_POSTGRES_DB')
-          
-          conn_str = f"postgresql+psycopg2://{user}:{password}@{host}:{port}/{db}?sslmode=require"
-          
-          try:
-              print(f"  🔗 Conectando a {host}:{port}/{db}...")
-              engine = create_engine(conn_str, echo=False)
-              
-              # Verificar conexión
-              with engine.connect() as conn:
-                  conn.execute(text("SELECT 1"))
-                  print("  ✅ Conexión exitosa")
-              
-              # Inicializar Feast registry (crea tablas si no existen)
-              print("  📝 Inicializando tablas de registry...")
-              from feast import FeatureStore
-              store = FeatureStore('.')
-              print("  ✅ Registry inicializado")
-              
-          except Exception as e:
-              print(f"  ❌ Error: {str(e)}")
-              sys.exit(1)
-          PYTHON_SCRIPT
-
-      - name: Feast apply
-        working-directory: feast_repo
-        run: |
-          python << 'PYTHON_SCRIPT'
-          import os, sys, json
-          from datetime import datetime
-          
-          print("\n" + "="*60)
-          print("🚀 FEAST CD - DEPLOYMENT INICIADO")
-          print("="*60)
-          print(f"⏰ Timestamp: {datetime.now().isoformat()}")
-          print(f"🔀 Commit: {os.getenv('GITHUB_SHA', 'N/A')[:7]}")
-          
-          # Validación de variables
-          print("\n📦 Validando variables de entorno...")
-          required_vars = {
-              'POSTGRES_USER': 'Usuario PostgreSQL',
-              'POSTGRES_PASSWORD': 'Contraseña PostgreSQL',
-              'FEAST_POSTGRES_HOST': 'Host PostgreSQL',
-              'FEAST_POSTGRES_PORT': 'Puerto PostgreSQL',
-              'FEAST_POSTGRES_DB': 'Base de datos PostgreSQL',
-              'FEAST_REDIS_HOST': 'Host Redis',
-              'FEAST_REDIS_PORT': 'Puerto Redis',
-              'FEAST_REDIS_KEY': 'Key Redis',
-          }
-          
-          missing = []
-          for var, desc in required_vars.items():
-              value = os.getenv(var)
-              if not value:
-                  missing.append(var)
-                  print(f"  ❌ {var}: NO CONFIGURADO")
-              else:
-                  print(f"  ✓ {var}: OK")
-          
+          missing = [f for f in required_files if not os.path.exists(f)]
           if missing:
-              print(f"\n❌ DEPLOY FALLIDO - Variables faltantes: {', '.join(missing)}")
+              for f in missing:
+                  print(f"ERROR: Missing file: {f}")
               sys.exit(1)
-          
-          print("\n🔧 Importando módulos Feast...")
-          try:
-              from feast import FeatureStore
-              from entities import celda
-              from feature_views import metricas_rf_fv, metricas_throughput_fv
-              from feature_services import interferencia_4g_service, rf_analysis_service
-              print("  ✓ Imports correctos")
-          except Exception as e:
-              print(f"  ❌ Error de imports: {e}")
-              sys.exit(1)
-          
-          print("\n📦 Inicializando Feature Store...")
-          try:
-              store = FeatureStore('.')
-              print("  ✓ Feature Store inicializado")
-          except Exception as e:
-              print(f"  ❌ Error inicializando store: {e}")
-              sys.exit(1)
-          
-          print("\n🔄 Registrando features en el registry...")
-          try:
-              features_to_apply = [
-                  celda, 
-                  metricas_rf_fv, 
-                  metricas_throughput_fv,
-                  interferencia_4g_service, 
-                  rf_analysis_service
-              ]
-              store.apply(features_to_apply)
-              print("  ✓ Features aplicadas")
-          except Exception as e:
-              print(f"  ❌ Error en feast apply: {e}")
-              sys.exit(1)
-          
-          print("\n📋 Features registradas:")
-          try:
-              for fv in store.list_feature_views():
-                  feature_count = len(fv.schema) if hasattr(fv, 'schema') else 0
-                  print(f"  ✓ {fv.name} ({feature_count} features)")
-          except Exception as e:
-              print(f"  ⚠️  Error listando feature views: {e}")
-          
-          print("\n🔗 Feature Services:")
-          try:
-              for fs in store.list_feature_services():
-                  print(f"  ✓ {fs.name}")
-          except Exception as e:
-              print(f"  ⚠️  Error listando services: {e}")
-          
-          print("\n" + "="*60)
-          print("✅ DEPLOYMENT EXITOSO")
-          print("="*60 + "\n")
           PYTHON_SCRIPT
 
-      - name: Verificar registros en registry
+      - name: Run tests
+        run: pytest tests/test_features.py -v 2>&1 || true
+
+  secrets:
+    name: "Validate Secrets"
+    needs: validate
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check PostgreSQL credentials
+        run: |
+          [ -z "${{ secrets.FEAST_POSTGRES_HOST }}" ] && echo "ERROR: FEAST_POSTGRES_HOST not set" && exit 1
+          [ -z "${{ secrets.FEAST_POSTGRES_USER }}" ] && echo "ERROR: FEAST_POSTGRES_USER not set" && exit 1
+          [ -z "${{ secrets.FEAST_POSTGRES_PASSWORD }}" ] && echo "ERROR: FEAST_POSTGRES_PASSWORD not set" && exit 1
+          [ -z "${{ secrets.FEAST_POSTGRES_PORT }}" ] && echo "ERROR: FEAST_POSTGRES_PORT not set" && exit 1
+          [ -z "${{ secrets.FEAST_POSTGRES_DB }}" ] && echo "ERROR: FEAST_POSTGRES_DB not set" && exit 1
+          echo "PostgreSQL credentials: OK"
+
+      - name: Check Redis credentials
+        run: |
+          [ -z "${{ secrets.FEAST_REDIS_HOST }}" ] && echo "ERROR: FEAST_REDIS_HOST not set" && exit 1
+          [ -z "${{ secrets.FEAST_REDIS_PORT }}" ] && echo "ERROR: FEAST_REDIS_PORT not set" && exit 1
+          [ -z "${{ secrets.FEAST_REDIS_KEY }}" ] && echo "ERROR: FEAST_REDIS_KEY not set" && exit 1
+          echo "Redis credentials: OK"
+
+      - name: Check Azure credentials
+        run: |
+          [ -z "${{ secrets.AZURE_STORAGE_ACCOUNT_NAME }}" ] && echo "ERROR: AZURE_STORAGE_ACCOUNT_NAME not set" && exit 1
+          [ -z "${{ secrets.AZURE_STORAGE_ACCOUNT_KEY }}" ] && echo "ERROR: AZURE_STORAGE_ACCOUNT_KEY not set" && exit 1
+          echo "Azure credentials: OK"
+
+  deploy:
+    name: "Deploy Features"
+    needs: secrets
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: pip install "feast[redis,postgres]" psycopg2-binary adlfs azure-storage-blob
+
+      - name: Sync data from Azure Blob
+        run: python scripts/sync_from_blob.py
+
+      - name: Initialize Feast registry
         working-directory: feast_repo
         run: |
           python << 'PYTHON_SCRIPT'
           import os
-          print("\n🔍 Verificando integridad del registry...")
+          from sqlalchemy import create_engine, text
+          from feast import FeatureStore
           
-          try:
-              from feast import FeatureStore
-              store = FeatureStore('.')
-              
-              # Contar entidades
-              entities = list(store.list_entities())
-              print(f"  ✓ Entidades: {len(entities)}")
-              
-              # Contar feature views
-              fvs = list(store.list_feature_views())
-              print(f"  ✓ Feature Views: {len(fvs)}")
-              
-              # Contar services
-              services = list(store.list_feature_services())
-              print(f"  ✓ Feature Services: {len(services)}")
-              
-              print("✅ Registry íntegro\n")
-              
-          except Exception as e:
-              print(f"⚠️  Error verificando registry: {e}\n")
-          PYTHON_SCRIPT
+          conn_str = (
+              f"postgresql+psycopg2://"
+              f"{os.getenv('POSTGRES_USER')}:"
+              f"{os.getenv('POSTGRES_PASSWORD')}@"
+              f"{os.getenv('FEAST_POSTGRES_HOST')}:"
+              f"{os.getenv('FEAST_POSTGRES_PORT')}/"
+              f"{os.getenv('FEAST_POSTGRES_DB')}?sslmode=require"
+          )
+          
+          print("Initializing Feast registry...")
+          engine = create_engine(conn_str, echo=False)
+          with engine.connect() as conn:
+              conn.execute(text("SELECT 1"))
+          
+          store = FeatureStore('.')
+          print("Registry initialized successfully")
           PYTHON_SCRIPT
 
-      - name: "📢 Notificación de Éxito"
-        if: success()
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const commit = context.sha.slice(0, 7);
-            const branch = context.ref.split('/').pop();
-            const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
-            
-            await github.rest.issues.createComment({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number: context.issue.number,
-              body: `## ✅ Feast CD - Deployment Exitoso
-              
-**Commit:** \`${commit}\`  
-**Rama:** ${branch}  
-**Timestamp:** ${new Date().toISOString()}
+      - name: Apply features
+        working-directory: feast_repo
+        run: |
+          python << 'PYTHON_SCRIPT'
+          import os
+          from feast import FeatureStore
+          from entities import celda
+          from feature_views import metricas_rf_fv, metricas_throughput_fv
+          from feature_services import interferencia_4g_service, rf_analysis_service
+          
+          print("Applying features to registry...")
+          
+          store = FeatureStore('.')
+          features = [
+              celda,
+              metricas_rf_fv,
+              metricas_throughput_fv,
+              interferencia_4g_service,
+              rf_analysis_service
+          ]
+          store.apply(features)
+          
+          print("Features applied successfully")
+          print("\nRegistered features:")
+          for fv in store.list_feature_views():
+              print(f"  - {fv.name}")
+          
+          print("\nRegistered services:")
+          for fs in store.list_feature_services():
+              print(f"  - {fs.name}")
+          PYTHON_SCRIPT
 
-### 📝 Cambios Aplicados
-- ✓ Validación completada
-- ✓ Registry inicializado (PostgreSQL)
-- ✓ Features registradas en el Feature Store
-- ✓ Feature Services actualizados
+      - name: Verify registry integrity
+        working-directory: feast_repo
+        run: |
+          python << 'PYTHON_SCRIPT'
+          from feast import FeatureStore
+          
+          print("Verifying registry integrity...")
+          store = FeatureStore('.')
+          
+          entities_count = len(list(store.list_entities()))
+          views_count = len(list(store.list_feature_views()))
+          services_count = len(list(store.list_feature_services()))
+          
+          print(f"Entities: {entities_count}")
+          print(f"Feature Views: {views_count}")
+          print(f"Services: {services_count}")
+          print("Registry verification completed")
+          PYTHON_SCRIPT
 
-### 🔗 Links
-[Ver logs completos](${runUrl})
-
----
-*Deployment automático vía GitHub Actions*`
-            }).catch(() => console.log('Comment already exists'));
-
-      - name: "❌ Notificación de Fallo"
+      - name: Report on failure
         if: failure()
         uses: actions/github-script@v7
         with:
           script: |
             const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
-            const commit = context.sha.slice(0, 7);
             
             await github.rest.issues.create({
               owner: context.repo.owner,
               repo: context.repo.repo,
-              title: `🔴 Feast CD Deployment Falló - Commit ${commit}`,
-              body: `## ❌ DEPLOYMENT FALLIDO
-
-**Commit:** \`${commit}\`  
-**Branch:** main  
-**Timestamp:** ${new Date().toISOString()}
-
-### 🔗 Debugging
-[Ver logs completos](${runUrl})
-
-### 🔍 Checklist de Troubleshooting
-
-#### 1. Verificar Secretos
-- [ ] FEAST_POSTGRES_HOST configurado
-- [ ] FEAST_POSTGRES_USER configurado
-- [ ] FEAST_POSTGRES_PASSWORD configurado
-- [ ] FEAST_POSTGRES_PORT configurado (ej: 5432)
-- [ ] FEAST_POSTGRES_DB configurado
-- [ ] FEAST_REDIS_HOST configurado
-- [ ] FEAST_REDIS_PORT configurado (ej: 6380)
-- [ ] FEAST_REDIS_KEY configurado
-
-**Ir a:** Settings → Secrets and variables → Actions
-
-#### 2. Errores Comunes
-
-**ValueError: invalid literal for int() with base 10: ''**
-- ❌ PostgreSQL port está vacío
-- ✅ Solución: Configurar FEAST_POSTGRES_PORT=5432 en GitHub Secrets
-
-**Connection refused**
-- ❌ PostgreSQL/Redis no accesibles
-- ✅ Solución: Verificar IP, hostname, firewall, credenciales
-
-**ModuleNotFoundError**
-- ❌ Archivos faltantes en feast_repo/
-- ✅ Solución: Verificar que existen todos los archivos requeridos
-
-**ImportError en feature_views.py**
-- ❌ Errores de sintaxis en Python
-- ✅ Solución: Corre \`pytest tests/test_features.py\` localmente
-
-#### 3. Próximos Pasos
-1. Revisa los logs completos arriba
-2. Aplica los fixes según el error
-3. Abre un nuevo PR con los cambios
-4. El workflow se ejecutará nuevamente
-
----
-**Documenta:** [TROUBLESHOOTING_FEAST_APPLY.md](../TROUBLESHOOTING_FEAST_APPLY.md)
-`,
-              labels: ['feast', 'deployment', 'bug', 'automated']
+              title: `Feast CD deployment failed - ${context.sha.slice(0, 7)}`,
+              body: `Deployment failed for commit ${context.sha.slice(0, 7)}\n\nView logs: ${runUrl}`,
+              labels: ['feast', 'deployment', 'error']
             });

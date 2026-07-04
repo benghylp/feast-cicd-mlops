@@ -3,6 +3,7 @@
 # ============================================================================
 # Trigger: push a main que toca feast_repo/, o manual
 # Si falla: crea Issue en GitHub
+# Valida secretos ANTES de ejecutar
 # ============================================================================
 
 name: "Feast Apply"
@@ -15,20 +16,50 @@ on:
   workflow_dispatch:
 
 env:
-  FEAST_POSTGRES_HOST: ${{ secrets.FEAST_POSTGRES_HOST }}
+  # Variables con valores por defecto si no están en secrets
+  POSTGRES_HOST: ${{ secrets.FEAST_POSTGRES_HOST }}
   POSTGRES_USER: ${{ secrets.FEAST_POSTGRES_USER }}
   POSTGRES_PASSWORD: ${{ secrets.FEAST_POSTGRES_PASSWORD }}
-  FEAST_POSTGRES_PORT: ${{ secrets.FEAST_POSTGRES_PORT }}
-  FEAST_POSTGRES_DB: ${{ secrets.FEAST_POSTGRES_DB }}
+  POSTGRES_PORT: ${{ secrets.FEAST_POSTGRES_PORT || '5432' }}
+  POSTGRES_DB: ${{ secrets.FEAST_POSTGRES_DB }}
   FEAST_REDIS_HOST: ${{ secrets.FEAST_REDIS_HOST }}
+  FEAST_REDIS_PORT: ${{ secrets.FEAST_REDIS_PORT || '6379' }}
   FEAST_REDIS_KEY: ${{ secrets.FEAST_REDIS_KEY }}
   AZURE_STORAGE_ACCOUNT_NAME: ${{ secrets.AZURE_STORAGE_ACCOUNT_NAME }}
   AZURE_STORAGE_ACCOUNT_KEY: ${{ secrets.AZURE_STORAGE_ACCOUNT_KEY }}
 
 
 jobs:
+  validate-secrets:
+    name: "🔐 Validar secretos"
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verificar PostgreSQL secrets
+        run: |
+          echo "🔐 Validando secretos PostgreSQL..."
+          [ -z "${{ secrets.FEAST_POSTGRES_HOST }}" ] && echo "❌ FEAST_POSTGRES_HOST vacío" && exit 1
+          [ -z "${{ secrets.FEAST_POSTGRES_USER }}" ] && echo "❌ FEAST_POSTGRES_USER vacío" && exit 1
+          [ -z "${{ secrets.FEAST_POSTGRES_PASSWORD }}" ] && echo "❌ FEAST_POSTGRES_PASSWORD vacío" && exit 1
+          [ -z "${{ secrets.FEAST_POSTGRES_DB }}" ] && echo "❌ FEAST_POSTGRES_DB vacío" && exit 1
+          echo "✅ PostgreSQL secrets configurados"
+
+      - name: Verificar Redis secrets
+        run: |
+          echo "🔐 Validando secretos Redis..."
+          [ -z "${{ secrets.FEAST_REDIS_HOST }}" ] && echo "❌ FEAST_REDIS_HOST vacío" && exit 1
+          [ -z "${{ secrets.FEAST_REDIS_KEY }}" ] && echo "❌ FEAST_REDIS_KEY vacío" && exit 1
+          echo "✅ Redis secrets configurados"
+
+      - name: Verificar Azure secrets
+        run: |
+          echo "🔐 Validando secretos Azure..."
+          [ -z "${{ secrets.AZURE_STORAGE_ACCOUNT_NAME }}" ] && echo "❌ AZURE_STORAGE_ACCOUNT_NAME vacío" && exit 1
+          [ -z "${{ secrets.AZURE_STORAGE_ACCOUNT_KEY }}" ] && echo "❌ AZURE_STORAGE_ACCOUNT_KEY vacío" && exit 1
+          echo "✅ Azure secrets configurados"
+
   apply:
-    name: Registrar features
+    name: "🚀 Registrar features"
+    needs: validate-secrets
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -47,32 +78,126 @@ jobs:
       - name: Feast apply
         working-directory: feast_repo
         run: |
-          python -c "
+          python << 'PYTHON_SCRIPT'
+          import os
+          import sys
+          
+          print("📦 Validando variables de entorno...")
+          required_vars = {
+              'POSTGRES_HOST': 'Host PostgreSQL',
+              'POSTGRES_USER': 'Usuario PostgreSQL',
+              'POSTGRES_PASSWORD': 'Contraseña PostgreSQL',
+              'POSTGRES_PORT': 'Puerto PostgreSQL',
+              'POSTGRES_DB': 'Base de datos PostgreSQL',
+              'FEAST_REDIS_HOST': 'Host Redis',
+              'FEAST_REDIS_KEY': 'Key Redis',
+          }
+          
+          missing = []
+          for var, desc in required_vars.items():
+              value = os.getenv(var)
+              if not value:
+                  missing.append(f"{var} ({desc})")
+                  print(f"  ❌ {var}")
+              else:
+                  # Muestra primeros caracteres (sin exponer secretos)
+                  display = value[:10] + "..." if len(value) > 10 else value
+                  print(f"  ✓ {var}: {display}")
+          
+          if missing:
+              print(f"\n❌ Faltan variables: {', '.join(missing)}")
+              sys.exit(1)
+          
+          print("\n✅ Todas las variables están configuradas")
+          print("\n🚀 Importando módulos Feast...")
+          
           from feast import FeatureStore
           from entities import celda
           from feature_views import metricas_rf_fv, metricas_throughput_fv
           from feature_services import interferencia_4g_service, rf_analysis_service
-
+          
+          print("✓ Imports correctos")
+          print("\n📦 Inicializando Feature Store...")
+          
           store = FeatureStore('.')
+          print("✓ Feature Store inicializado")
+          
+          print("\n🔄 Aplicando cambios...")
           store.apply([celda, metricas_rf_fv, metricas_throughput_fv,
                        interferencia_4g_service, rf_analysis_service])
-
+          
+          print("\n📋 Features registradas:")
           for fv in store.list_feature_views():
-              print(f'  ✓ {fv.name}: {len(fv.features)} features')
+              print(f"  ✓ {fv.name}: {len(fv.features)} features")
+          
+          print("\n🔗 Feature Services:")
           for fs in store.list_feature_services():
-              print(f'  ✓ Service: {fs.name}')
-          print('  ✅ feast apply completado')
-          "
+              print(f"  ✓ {fs.name}")
+          
+          print("\n✅ Feast apply completado exitosamente")
+          PYTHON_SCRIPT
 
-      - name: Crear Issue si falla
+      - name: 📢 Crear Issue si falla
         if: failure()
         uses: actions/github-script@v7
         with:
           script: |
+            const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            
             await github.rest.issues.create({
               owner: context.repo.owner,
               repo: context.repo.repo,
-              title: '❌ Feast apply falló',
-              body: `Commit: ${context.sha.slice(0,7)}\n[Ver logs](${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId})`,
-              labels: ['feast', 'bug']
+              title: `❌ Feast apply falló en commit ${context.sha.slice(0,7)}`,
+              body: `## 🔴 Feast Apply Falló
+
+**Commit:** \`${context.sha.slice(0,7)}\`
+**Rama:** main
+**Trigger:** \`${{ github.event_name }}\`
+
+## 🔗 Recursos
+- [Ver logs completos](${runUrl})
+
+## 🔍 Troubleshooting Checklist
+
+### 1️⃣ Verificar Secretos en GitHub
+- [ ] \`FEAST_POSTGRES_HOST\` configurado
+- [ ] \`FEAST_POSTGRES_USER\` configurado  
+- [ ] \`FEAST_POSTGRES_PASSWORD\` configurado
+- [ ] \`FEAST_POSTGRES_PORT\` configurado (ej: 5432)
+- [ ] \`FEAST_POSTGRES_DB\` configurado
+- [ ] \`FEAST_REDIS_HOST\` configurado (formato: host:port)
+- [ ] \`FEAST_REDIS_KEY\` configurado
+- [ ] \`AZURE_STORAGE_ACCOUNT_NAME\` configurado
+- [ ] \`AZURE_STORAGE_ACCOUNT_KEY\` configurado
+
+**Ir a:** Settings → Secrets and variables → Actions
+
+### 2️⃣ Errores Comunes
+
+**Error: \`ValueError: invalid literal for int() with base 10: ''\`**
+- PostgreSQL port está vacío
+- Solución: Configura \`FEAST_POSTGRES_PORT=5432\` en GitHub Secrets
+
+**Error: \`Connection refused\`**
+- PostgreSQL no accesible
+- Solución: Verifica IP/hostname y firewall
+
+**Error: \`ModuleNotFoundError\`**
+- Faltan archivos en feast_repo/
+- Solución: Verifica que existen todos los archivos requeridos
+
+**Error: \`ImportError\`**
+- Errores de sintaxis en Python
+- Solución: Corre \`pytest tests/test_features.py\` localmente
+
+### 3️⃣ Próximos Pasos
+1. Revisa los logs completos arriba
+2. Aplica los fixes según el error
+3. Abre un PR con los cambios
+4. Si persiste, contacta a @mlops-team
+
+---
+**Ver guía completa:** [TROUBLESHOOTING_FEAST_APPLY.md](../TROUBLESHOOTING_FEAST_APPLY.md)
+`,
+              labels: ['feast', 'bug', 'automated']
             })

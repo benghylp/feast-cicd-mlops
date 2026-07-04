@@ -5,7 +5,7 @@
 # Jobs: validate → secrets → deploy
 # ============================================================================
 
-name: "Feast CD"
+name: "Feast CD - apply features"
 
 on:
   push:

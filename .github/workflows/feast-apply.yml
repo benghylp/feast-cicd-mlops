@@ -13,25 +13,96 @@ on:
     branches: [main]
     paths:
       - "feast_repo/**"
-  workflow_dispatch:
 
 env:
-  # Variables con valores por defecto si no están en secrets
-  POSTGRES_HOST: ${{ secrets.FEAST_POSTGRES_HOST }}
+  # Nombres de variables EXACTOS que usa feature_store.yaml
+  # Registry: postgresql+psycopg2://${POSTGRES_USER}:${POSTGRES_PASSWORD}@${FEAST_POSTGRES_HOST}:${FEAST_POSTGRES_PORT}/${FEAST_POSTGRES_DB}
+  # Online Store Redis: ${FEAST_REDIS_HOST}:${FEAST_REDIS_PORT},password=${FEAST_REDIS_KEY}
   POSTGRES_USER: ${{ secrets.FEAST_POSTGRES_USER }}
   POSTGRES_PASSWORD: ${{ secrets.FEAST_POSTGRES_PASSWORD }}
-  POSTGRES_PORT: ${{ secrets.FEAST_POSTGRES_PORT || '5432' }}
-  POSTGRES_DB: ${{ secrets.FEAST_POSTGRES_DB }}
+  FEAST_POSTGRES_HOST: ${{ secrets.FEAST_POSTGRES_HOST }}
+  FEAST_POSTGRES_PORT: ${{ secrets.FEAST_POSTGRES_PORT }}
+  FEAST_POSTGRES_DB: ${{ secrets.FEAST_POSTGRES_DB }}
   FEAST_REDIS_HOST: ${{ secrets.FEAST_REDIS_HOST }}
-  FEAST_REDIS_PORT: ${{ secrets.FEAST_REDIS_PORT || '6379' }}
+  FEAST_REDIS_PORT: ${{ secrets.FEAST_REDIS_PORT }}
   FEAST_REDIS_KEY: ${{ secrets.FEAST_REDIS_KEY }}
   AZURE_STORAGE_ACCOUNT_NAME: ${{ secrets.AZURE_STORAGE_ACCOUNT_NAME }}
   AZURE_STORAGE_ACCOUNT_KEY: ${{ secrets.AZURE_STORAGE_ACCOUNT_KEY }}
 
 
 jobs:
+  validate:
+    name: "✅ Validar features"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Instalar dependencias
+        run: pip install "feast[redis,postgres]" pytest pyyaml
+
+      - name: Validar syntax
+        run: |
+          python -c "
+          import ast, sys, glob
+          errors = 0
+          for f in glob.glob('feast_repo/*.py'):
+              try:
+                  ast.parse(open(f).read())
+                  print(f'  ✓ {f}')
+              except SyntaxError as e:
+                  print(f'  ✗ {f}: {e}')
+                  errors += 1
+          sys.exit(errors)
+          "
+
+      - name: Validar estructura
+        run: |
+          python -c "
+          import os, sys
+          required = ['feast_repo/feature_store.yaml', 'feast_repo/entities.py',
+                      'feast_repo/sources.py', 'feast_repo/feature_views.py',
+                      'feast_repo/feature_services.py']
+          missing = [f for f in required if not os.path.exists(f)]
+          if missing:
+              for f in missing: print(f'  ✗ Falta: {f}')
+              sys.exit(1)
+          for f in required: print(f'  ✓ {f}')
+          "
+
+      - name: Validar YAML
+        run: |
+          python -c "
+          import yaml, sys
+          with open('feast_repo/feature_store.yaml') as f:
+              config = yaml.safe_load(f)
+          for key in ['project', 'registry', 'online_store']:
+              assert key in config, f'Falta: {key}'
+              print(f'  ✓ {key}')
+          "
+
+      - name: Tests de convenciones
+        run: pytest tests/test_features.py -v --tb=short
+
+      - name: Dry-run imports
+        run: |
+          cd feast_repo && python -c "
+          from entities import celda
+          from feature_views import metricas_rf_fv, metricas_throughput_fv
+          from feature_services import interferencia_4g_service
+          print(f'  ✓ Entity: {celda.name}')
+          print(f'  ✓ Views: {metricas_rf_fv.name}, {metricas_throughput_fv.name}')
+          print(f'  ✓ Service: {interferencia_4g_service.name}')
+          print('  ✅ Validación completa')
+          "
+
   validate-secrets:
     name: "🔐 Validar secretos"
+    needs: validate
     runs-on: ubuntu-latest
     steps:
       - name: Verificar PostgreSQL secrets
@@ -40,6 +111,7 @@ jobs:
           [ -z "${{ secrets.FEAST_POSTGRES_HOST }}" ] && echo "❌ FEAST_POSTGRES_HOST vacío" && exit 1
           [ -z "${{ secrets.FEAST_POSTGRES_USER }}" ] && echo "❌ FEAST_POSTGRES_USER vacío" && exit 1
           [ -z "${{ secrets.FEAST_POSTGRES_PASSWORD }}" ] && echo "❌ FEAST_POSTGRES_PASSWORD vacío" && exit 1
+          [ -z "${{ secrets.FEAST_POSTGRES_PORT }}" ] && echo "❌ FEAST_POSTGRES_PORT vacío (debe ser número: 5432)" && exit 1
           [ -z "${{ secrets.FEAST_POSTGRES_DB }}" ] && echo "❌ FEAST_POSTGRES_DB vacío" && exit 1
           echo "✅ PostgreSQL secrets configurados"
 
@@ -47,6 +119,7 @@ jobs:
         run: |
           echo "🔐 Validando secretos Redis..."
           [ -z "${{ secrets.FEAST_REDIS_HOST }}" ] && echo "❌ FEAST_REDIS_HOST vacío" && exit 1
+          [ -z "${{ secrets.FEAST_REDIS_PORT }}" ] && echo "❌ FEAST_REDIS_PORT vacío (ej: 6380)" && exit 1
           [ -z "${{ secrets.FEAST_REDIS_KEY }}" ] && echo "❌ FEAST_REDIS_KEY vacío" && exit 1
           echo "✅ Redis secrets configurados"
 
@@ -84,12 +157,13 @@ jobs:
           
           print("📦 Validando variables de entorno...")
           required_vars = {
-              'POSTGRES_HOST': 'Host PostgreSQL',
               'POSTGRES_USER': 'Usuario PostgreSQL',
               'POSTGRES_PASSWORD': 'Contraseña PostgreSQL',
-              'POSTGRES_PORT': 'Puerto PostgreSQL',
-              'POSTGRES_DB': 'Base de datos PostgreSQL',
+              'FEAST_POSTGRES_HOST': 'Host PostgreSQL',
+              'FEAST_POSTGRES_PORT': 'Puerto PostgreSQL',
+              'FEAST_POSTGRES_DB': 'Base de datos PostgreSQL',
               'FEAST_REDIS_HOST': 'Host Redis',
+              'FEAST_REDIS_PORT': 'Puerto Redis',
               'FEAST_REDIS_KEY': 'Key Redis',
           }
           
@@ -150,54 +224,54 @@ jobs:
               title: `❌ Feast apply falló en commit ${context.sha.slice(0,7)}`,
               body: `## 🔴 Feast Apply Falló
 
-**Commit:** \`${context.sha.slice(0,7)}\`
-**Rama:** main
-**Trigger:** \`${{ github.event_name }}\`
+            **Commit:** \`${context.sha.slice(0,7)}\`
+            **Rama:** main
+            **Trigger:** \`${{ github.event_name }}\`
 
-## 🔗 Recursos
-- [Ver logs completos](${runUrl})
+            ## 🔗 Recursos
+            - [Ver logs completos](${runUrl})
 
-## 🔍 Troubleshooting Checklist
+            ## 🔍 Troubleshooting Checklist
 
-### 1️⃣ Verificar Secretos en GitHub
-- [ ] \`FEAST_POSTGRES_HOST\` configurado
-- [ ] \`FEAST_POSTGRES_USER\` configurado  
-- [ ] \`FEAST_POSTGRES_PASSWORD\` configurado
-- [ ] \`FEAST_POSTGRES_PORT\` configurado (ej: 5432)
-- [ ] \`FEAST_POSTGRES_DB\` configurado
-- [ ] \`FEAST_REDIS_HOST\` configurado (formato: host:port)
-- [ ] \`FEAST_REDIS_KEY\` configurado
-- [ ] \`AZURE_STORAGE_ACCOUNT_NAME\` configurado
-- [ ] \`AZURE_STORAGE_ACCOUNT_KEY\` configurado
+            ### 1️⃣ Verificar Secretos en GitHub
+            - [ ] \`FEAST_POSTGRES_HOST\` configurado
+            - [ ] \`FEAST_POSTGRES_USER\` configurado  
+            - [ ] \`FEAST_POSTGRES_PASSWORD\` configurado
+            - [ ] \`FEAST_POSTGRES_PORT\` configurado (ej: 5432)
+            - [ ] \`FEAST_POSTGRES_DB\` configurado
+            - [ ] \`FEAST_REDIS_HOST\` configurado (formato: host:port)
+            - [ ] \`FEAST_REDIS_KEY\` configurado
+            - [ ] \`AZURE_STORAGE_ACCOUNT_NAME\` configurado
+            - [ ] \`AZURE_STORAGE_ACCOUNT_KEY\` configurado
 
-**Ir a:** Settings → Secrets and variables → Actions
+            **Ir a:** Settings → Secrets and variables → Actions
 
-### 2️⃣ Errores Comunes
+            ### 2️⃣ Errores Comunes
 
-**Error: \`ValueError: invalid literal for int() with base 10: ''\`**
-- PostgreSQL port está vacío
-- Solución: Configura \`FEAST_POSTGRES_PORT=5432\` en GitHub Secrets
+            **Error: \`ValueError: invalid literal for int() with base 10: ''\`**
+            - PostgreSQL port está vacío
+            - Solución: Configura \`FEAST_POSTGRES_PORT=5432\` en GitHub Secrets
 
-**Error: \`Connection refused\`**
-- PostgreSQL no accesible
-- Solución: Verifica IP/hostname y firewall
+            **Error: \`Connection refused\`**
+            - PostgreSQL no accesible
+            - Solución: Verifica IP/hostname y firewall
 
-**Error: \`ModuleNotFoundError\`**
-- Faltan archivos en feast_repo/
-- Solución: Verifica que existen todos los archivos requeridos
+            **Error: \`ModuleNotFoundError\`**
+            - Faltan archivos en feast_repo/
+            - Solución: Verifica que existen todos los archivos requeridos
 
-**Error: \`ImportError\`**
-- Errores de sintaxis en Python
-- Solución: Corre \`pytest tests/test_features.py\` localmente
+            **Error: \`ImportError\`**
+            - Errores de sintaxis en Python
+            - Solución: Corre \`pytest tests/test_features.py\` localmente
 
-### 3️⃣ Próximos Pasos
-1. Revisa los logs completos arriba
-2. Aplica los fixes según el error
-3. Abre un PR con los cambios
-4. Si persiste, contacta a @mlops-team
+            ### 3️⃣ Próximos Pasos
+            1. Revisa los logs completos arriba
+            2. Aplica los fixes según el error
+            3. Abre un PR con los cambios
+            4. Si persiste, contacta a @mlops-team
 
----
-**Ver guía completa:** [TROUBLESHOOTING_FEAST_APPLY.md](../TROUBLESHOOTING_FEAST_APPLY.md)
-`,
-              labels: ['feast', 'bug', 'automated']
-            })
+            ---
+            **Ver guía completa:** [TROUBLESHOOTING_FEAST_APPLY.md](../TROUBLESHOOTING_FEAST_APPLY.md)
+            `,
+                        labels: ['feast', 'bug', 'automated']
+                        })

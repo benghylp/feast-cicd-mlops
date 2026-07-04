@@ -16,6 +16,7 @@ metricas_rf_fv = FeatureView(
         Field(name="pci", dtype=Int64, description="Physical Cell ID (0-503)"),
         Field(name="earfcn", dtype=Int64, description="E-UTRA Absolute Radio Frequency Channel Number"),
         Field(name="banda", dtype=String, description="Banda de frecuencia (B2, B4, B7, B28)"),
+
     ],
     source=metricas_rf_source,
     online=True,

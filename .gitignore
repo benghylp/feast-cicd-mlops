@@ -1,0 +1,78 @@
+# ============================================================================
+# Feast CI/CD Example - .gitignore
+# ============================================================================
+
+# Python environment
+venv/
+env/
+ENV/
+.venv/
+*.egg-info/
+build/
+dist/
+*.egg
+*.pyc
+__pycache__/
+.Python
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Environment and config
+.env
+.env.local
+.env.*.local
+local_config.yaml
+
+# Feast local data and cache
+feast_repo/data/          # Local data sync from blob storage
+.feast/
+feast_registry.db
+
+# Data and artifacts
+*.parquet
+*.csv
+*.pkl
+data/
+models/
+
+# Test and coverage
+.pytest_cache/
+htmlcov/
+.coverage
+*.cover
+
+# Logs
+*.log
+logs/
+
+# OS
+Thumbs.db
+.DS_Store
+
+# Credentials (NEVER commit secrets!)
+*.pem
+*.key
+*.p12
+.netrc
+
+# Temporary files
+*.tmp
+*.temp
+.tmp/
+
+# IDE configuration
+.editorconfig
+
+# Build outputs
+*.whl
+
+# ============================================================================
+# IMPORTANT: Never commit sensitive information!
+# Use GitHub Secrets for credentials in .github/workflows/
+# ============================================================================

@@ -1,0 +1,13 @@
+# ============================================================================
+# Feast CI/CD Example - Requirements (flexible versions)
+# Python 3.11+
+# ============================================================================
+
+feast[redis,postgres]>=0.42.0
+pytest>=7.4.0
+pyyaml>=6.0
+azure-storage-blob>=12.20.0
+psycopg2-binary>=2.9.0
+redis>=5.0.0
+adlfs>=2024.0.0
+

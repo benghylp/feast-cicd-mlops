@@ -1,0 +1,15 @@
+project: interferencia_4g_v2
+provider: local
+
+registry:
+  registry_type: sql
+  path: postgresql+psycopg2://${POSTGRES_USER}:${POSTGRES_PASSWORD}@${POSTGRES_HOST}:${POSTGRES_PORT}/${POSTGRES_DB}?sslmode=require
+
+offline_store:
+  type: file
+
+online_store:
+  type: redis
+  connection_string: ${FEAST_REDIS_HOST}:${FEAST_REDIS_PORT},password=${FEAST_REDIS_KEY},ssl=true,db=0
+
+entity_key_serialization_version: 3

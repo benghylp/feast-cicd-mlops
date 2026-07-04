@@ -1,0 +1,38 @@
+# ============================================================================
+# CODEOWNERS - Code ownership and review requirements
+# ============================================================================
+# GitHub uses this file to automatically request reviews from these users
+# when someone opens a pull request that modifies these files.
+#
+# Reference: https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-code-owners
+
+# Feature Store governance
+feast_repo/                @mlops-team
+tests/                     @mlops-team
+.github/workflows/         @mlops-team
+
+# Default reviewers
+*                          @mlops-team
+
+# Documentation
+README.md                  @mlops-team
+
+# ============================================================================
+# SETUP INSTRUCTIONS:
+# ============================================================================
+# 1. Replace @mlops-team with actual GitHub team/username
+#    Examples:
+#    - @username (individual)
+#    - @org/team-name (GitHub team)
+#
+# 2. Multiple owners (requires ANY to approve):
+#    feast_repo/   @user1 @user2
+#
+# 3. Multiple owners (requires ALL to approve):
+#    feast_repo/   @user1
+#    feast_repo/   @user2
+#
+# 4. In GitHub, configure branch protection:
+#    - Require pull request reviews: YES
+#    - Require review from code owners: YES
+# ============================================================================

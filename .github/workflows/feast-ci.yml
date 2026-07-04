@@ -1,0 +1,85 @@
+# ============================================================================
+# Feast CI — Valida features en cada PR
+# ============================================================================
+# Trigger: PR que toca feast_repo/ o tests/
+# Si falla: el PR no se puede mergear
+# ============================================================================
+
+name: "Feast CI"
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "feast_repo/**"
+      - "tests/**"
+
+jobs:
+  validate:
+    name: Validar features
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Instalar dependencias
+        run: pip install "feast[redis,postgres]" pytest pyyaml
+
+      - name: Validar syntax
+        run: |
+          python -c "
+          import ast, sys, glob
+          errors = 0
+          for f in glob.glob('feast_repo/*.py'):
+              try:
+                  ast.parse(open(f).read())
+                  print(f'  ✓ {f}')
+              except SyntaxError as e:
+                  print(f'  ✗ {f}: {e}')
+                  errors += 1
+          sys.exit(errors)
+          "
+
+      - name: Validar estructura
+        run: |
+          python -c "
+          import os, sys
+          required = ['feast_repo/feature_store.yaml', 'feast_repo/entities.py',
+                      'feast_repo/sources.py', 'feast_repo/feature_views.py',
+                      'feast_repo/feature_services.py']
+          missing = [f for f in required if not os.path.exists(f)]
+          if missing:
+              for f in missing: print(f'  ✗ Falta: {f}')
+              sys.exit(1)
+          for f in required: print(f'  ✓ {f}')
+          "
+
+      - name: Validar YAML
+        run: |
+          python -c "
+          import yaml, sys
+          with open('feast_repo/feature_store.yaml') as f:
+              config = yaml.safe_load(f)
+          for key in ['project', 'registry', 'online_store']:
+              assert key in config, f'Falta: {key}'
+              print(f'  ✓ {key}')
+          "
+
+      - name: Tests de convenciones
+        run: pytest tests/test_features.py -v --tb=short
+
+      - name: Dry-run imports
+        run: |
+          cd feast_repo && python -c "
+          from entities import celda
+          from feature_views import metricas_rf_fv, metricas_throughput_fv
+          from feature_services import interferencia_4g_service
+          print(f'  ✓ Entity: {celda.name}')
+          print(f'  ✓ Views: {metricas_rf_fv.name} ({len(metricas_rf_fv.schema)} fields), {metricas_throughput_fv.name} ({len(metricas_throughput_fv.schema)} fields)')
+          print(f'  ✓ Service: {interferencia_4g_service.name}')
+          print('  ✅ Validación completa')
+          "

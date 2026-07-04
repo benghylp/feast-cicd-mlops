@@ -1,0 +1,75 @@
+# ============================================================================
+# Feast Apply — Registra features después del merge
+# ============================================================================
+# Trigger: push a main que toca feast_repo/, o manual
+# Si falla: crea Issue en GitHub
+# ============================================================================
+
+name: "Feast Apply"
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "feast_repo/**"
+  workflow_dispatch:
+
+env:
+  FEAST_POSTGRES_HOST: ${{ secrets.FEAST_POSTGRES_HOST }}
+  FEAST_POSTGRES_USER: ${{ secrets.FEAST_POSTGRES_USER }}
+  FEAST_POSTGRES_PASSWORD: ${{ secrets.FEAST_POSTGRES_PASSWORD }}
+  FEAST_REDIS_HOST: ${{ secrets.FEAST_REDIS_HOST }}
+  FEAST_REDIS_KEY: ${{ secrets.FEAST_REDIS_KEY }}
+  AZURE_STORAGE_ACCOUNT_NAME: ${{ secrets.AZURE_STORAGE_ACCOUNT_NAME }}
+  AZURE_STORAGE_ACCOUNT_KEY: ${{ secrets.AZURE_STORAGE_ACCOUNT_KEY }}
+
+jobs:
+  apply:
+    name: Registrar features
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Instalar dependencias
+        run: pip install "feast[redis,postgres]" psycopg2-binary adlfs azure-storage-blob
+
+      - name: Sincronizar datos desde Blob
+        run: python scripts/sync_from_blob.py
+
+      - name: Feast apply
+        working-directory: feast_repo
+        run: |
+          python -c "
+          from feast import FeatureStore
+          from entities import celda
+          from feature_views import metricas_rf_fv, metricas_throughput_fv
+          from feature_services import interferencia_4g_service, rf_analysis_service
+
+          store = FeatureStore('.')
+          store.apply([celda, metricas_rf_fv, metricas_throughput_fv,
+                       interferencia_4g_service, rf_analysis_service])
+
+          for fv in store.list_feature_views():
+              print(f'  ✓ {fv.name}: {len(fv.features)} features')
+          for fs in store.list_feature_services():
+              print(f'  ✓ Service: {fs.name}')
+          print('  ✅ feast apply completado')
+          "
+
+      - name: Crear Issue si falla
+        if: failure()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: '❌ Feast apply falló',
+              body: `Commit: ${context.sha.slice(0,7)}\n[Ver logs](${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId})`,
+              labels: ['feast', 'bug']
+            })

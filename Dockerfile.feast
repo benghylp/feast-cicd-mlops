@@ -10,14 +10,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     && rm -rf /var/lib/apt/lists/*
 
-RUN pip install \
-    "feast[redis,postgres]" \
-    psycopg2-binary \
-    azure-storage-blob \
-    adlfs
-
 WORKDIR /app
 
+# Copiar requirements.txt e instalar dependencias
+COPY requirements.txt .
+RUN pip install -r requirements.txt
+
+# Copiar código de la aplicación
 COPY feast_repo/ ./feast_repo/
 COPY scripts/feast_materialize.py ./scripts/
 

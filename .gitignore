@@ -77,3 +77,5 @@ Thumbs.db
 # Use GitHub Secrets for credentials in .github/workflows/
 # ============================================================================
 GITHUB_SECRETS_SETUP.md
+
+feast-build-materializer-azure-credentials.yml
